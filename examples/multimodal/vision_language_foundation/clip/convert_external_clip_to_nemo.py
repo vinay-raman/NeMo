@@ -42,6 +42,7 @@ from nemo.collections.multimodal.models.vision_language_foundation.clip.megatron
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.utils import AppState, logging
 from nemo.utils.distributed import initialize_distributed
+from nemo.collections.nlp.parts.utils_funcs import torch_dtype_from_precision
 
 try:
     from megatron.core import parallel_state
@@ -57,7 +58,7 @@ def get_args():
     parser = ArgumentParser()
     parser.add_argument("--arch", type=str, default="ViT-H-14")
     parser.add_argument("--version", type=str, default="laion2b_s32b_b79k")
-
+    parser.add_argument("--precision", type=int, default=32)
     parser.add_argument(
         "--hparams_file",
         type=str,
@@ -112,7 +113,6 @@ def mapping_openclip_state_dict(open_model):
         ".positional_embedding": ".position_embeddings",
         ".backbone.proj": ".head.weight",
         ".class_embedding": ".cls_token",
-        ".backbone.conv1.weight": ".backbone.linear_encoder.weight",
     }
 
     nemo_state_dict = {}
@@ -139,9 +139,7 @@ def mapping_openclip_state_dict(open_model):
     nemo_state_dict["vision_encoder.backbone.cls_token"] = nemo_state_dict[
         "vision_encoder.backbone.cls_token"
     ].reshape(1, 1, -1)
-    w = nemo_state_dict["vision_encoder.backbone.linear_encoder.weight"]
-    nemo_state_dict["vision_encoder.backbone.linear_encoder.weight"] = einops.rearrange(w, "b c p1 p2 -> b (p1 p2 c)",)
-    nemo_state_dict["vision_encoder.backbone.linear_encoder.bias"] = torch.zeros(w.shape[0])
+  
 
     return nemo_state_dict
 
@@ -168,10 +166,10 @@ def mapping_hf_state_dict(hf_model):
         ".pre_layrnorm.bias": ".preprocess_layernorm.bias",
         ".post_layernorm.weight": ".transformer.final_layernorm.weight",
         ".post_layernorm.bias": ".transformer.final_layernorm.bias",
-        ".backbone.embeddings.position_embedding.weight": ".backbone.position_embeddings.weight",
-        ".language_model.embeddings.position_embedding.weight": ".language_model.embedding.position_embeddings.weight",
+        ".backbone.embeddings.position_embedding.weight": ".backbone.position_embeddings",
+        ".language_model.embeddings.position_embedding.weight": ".language_model.embedding.position_embeddings",
         ".embeddings.class_embedding": ".cls_token",
-        ".backbone.embeddings.patch_embedding.weight": ".backbone.linear_encoder.weight",
+        ".backbone.embeddings.patch_embedding.weight": ".backbone.conv1.weight",
         ".final_layer_norm.weight": ".encoder.final_layernorm.weight",
         ".final_layer_norm.bias": ".encoder.final_layernorm.bias",
         ".embeddings.token_embedding.weight": ".embedding.word_embeddings.weight",
@@ -208,14 +206,15 @@ def mapping_hf_state_dict(hf_model):
     nemo_state_dict["vision_encoder.backbone.cls_token"] = nemo_state_dict[
         "vision_encoder.backbone.cls_token"
     ].reshape(1, 1, -1)
-    w = nemo_state_dict["vision_encoder.backbone.linear_encoder.weight"]
-    nemo_state_dict["vision_encoder.backbone.linear_encoder.weight"] = einops.rearrange(w, "b c p1 p2 -> b (p1 p2 c)",)
-    nemo_state_dict["vision_encoder.backbone.linear_encoder.bias"] = torch.zeros(w.shape[0])
 
     return nemo_state_dict
 
 
 def convert(local_rank, rank, world_size, args):
+
+    nemo_config = OmegaConf.load(args.hparams_file)
+    nemo_config.trainer["precision"] = args.precision
+    
     app_state = AppState()
     app_state.data_parallel_rank = 0
     num_nodes = world_size // args.gpus_per_node
@@ -259,6 +258,7 @@ def convert(local_rank, rank, world_size, args):
     model = MegatronCLIPModel(cfg.model, trainer)
 
     if args.version == "huggingface":
+        print ('############################################')
         hf_model = CLIPModel.from_pretrained(args.arch)
         state_dict = mapping_hf_state_dict(hf_model)
     else:
@@ -272,6 +272,8 @@ def convert(local_rank, rank, world_size, args):
     if torch.distributed.is_initialized():
         torch.distributed.barrier()
 
+    dtype = torch_dtype_from_precision(args.precision)
+    model = model.to(dtype=dtype)
     model.save_to(args.nemo_file_path)
 
     logging.info(f'NeMo model saved to: {args.nemo_file_path}')

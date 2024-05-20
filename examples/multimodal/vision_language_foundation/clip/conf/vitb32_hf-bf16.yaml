@@ -1,5 +1,5 @@
-name: megatron_clip
-restore_from_path: null # used when starting from a .nemo file
+image_path: /NeMo/clip_test/data/dog_skateboard_image.jpg # Path to a image for inference
+texts: [cat on skateboard, dog on skateboard, dog wearing sunglasses on skateboard, man on skateboard] # List of texts to compute similarity
 
 trainer:
   devices: 1
@@ -10,8 +10,8 @@ trainer:
   enable_checkpointing: False
   use_distributed_sampler: False
   max_epochs: -1 # PTL default. In practice, max_steps will be reached first.
-  max_steps: 375000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
-  log_every_n_steps: 10
+  max_steps: 260000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  log_every_n_steps: 1
   val_check_interval: 100
   check_val_every_n_epoch: null
   limit_val_batches: 50
@@ -19,16 +19,17 @@ trainer:
   accumulate_grad_batches: 1 # do not modify, grad acc is automatic for training megatron models
   gradient_clip_val: 1.0
   benchmark: False
-  enable_model_summary: False # default PTL callback for this does not support model parallelism, instead we log manually
+  enable_model_summary: False
 
 exp_manager:
   explicit_log_dir: null
   exp_dir: null
   name: megatron_clip
-  create_wandb_logger: False
+  create_wandb_logger: True
   wandb_logger_kwargs:
-    project: null
-    name: null
+    entity: nemollm-mlops-eval-tool
+    project: multimodal-retriever
+    name: fp_32_trial
   resume_if_exists: True
   resume_ignore_no_checkpoint: True
   resume_from_checkpoint: ${model.resume_from_checkpoint}
@@ -49,16 +50,16 @@ exp_manager:
     cpu_offload: False
 
 model:
-  precision: ${trainer.precision}
+  precision: 16
   # specify micro_batch_size, global_batch_size, and model parallelism
   # gradient accumulation will be done automatically based on data_parallel_size
-  micro_batch_size: 32 # limited by GPU memory
-  global_batch_size: 32 # will use more micro batches to reach global batch size
+  micro_batch_size: 105 # limited by GPU memory
+  global_batch_size: 105 # will use more micro batches to reach global batch size
   tensor_model_parallel_size: 1 # intra-layer model parallelism
   pipeline_model_parallel_size: 1 # inter-layer model parallelism
   virtual_pipeline_model_parallel_size: null # interleaved pipeline
 
-  restore_from_path: null # used in fine-tuning
+  restore_from_path: /NeMo/clip_test/vitb32_hf_bf16.nemo # used in fine-tuning
   # multimodal configs
   output_dim: 512
   #  As the number of devices used to train increases, so does the space complexity of
@@ -66,11 +67,11 @@ model:
   #  `O(n^2)`. Instead, complexity may become effectively linear if the flags
   #  `--gather-with-grad` and `--local-loss` are used. This alteration results in one-to-one
   #  numerical results as the naïve method.
-  local_loss: False # calculate loss w/ local features @ global (instead of realizing full global @ global matrix)
+  local_loss: True # calculate loss w/ local features @ global (instead of realizing full global @ global matrix)
   gather_with_grad: True # enable full distributed gradient for feature gather, set this to False may cause convergence issue
 
   vision:
-    precision: ${trainer.precision}
+    precision: 16
     # vision configs
     patch_dim: 32
     img_h: 224
@@ -82,13 +83,13 @@ model:
     drop_path_rate: 0.0
     global_average_pool: False
     output_dim: ${model.output_dim}
-    class_token_length: 8
+    class_token_length: 1
     preprocess_layernorm: True # apply layer norm to embedded tokens
 
     # model architecture
-    encoder_seq_length: 196
+    encoder_seq_length: 49
     max_position_embeddings: ${.encoder_seq_length}
-    position_embedding_type: learned_absolute
+    position_embedding_type: learned_parameters
     num_layers: 12
     hidden_size: 768
     ffn_hidden_size: 3072 # Transformer FFN hidden size. Usually 4 * hidden_size.
@@ -128,18 +129,20 @@ model:
     gradient_accumulation_fusion: False # Fuse weight gradient accumulation to GEMMs. Only used with pipeline parallelism.
     openai_gelu: False
     bias_activation_fusion: False
-    megatron_legacy: False
+    megatron_legacy: True
+    activation: approx-gelu
+
 
 
   text:
-    precision: ${trainer.precision}
+    precision: 16
     # text configs
     output_dim: ${model.output_dim}
 
     # model architecture
     encoder_seq_length: 77
     max_position_embeddings: ${.encoder_seq_length}
-    position_embedding_type: learned_absolute
+    position_embedding_type: learned_parameters
     num_layers: 12
     hidden_size: 512
     ffn_hidden_size: 2048 # Transformer FFN hidden size. Usually 4 * hidden_size.
@@ -181,7 +184,7 @@ model:
     gradient_accumulation_fusion: False # Fuse weight gradient accumulation to GEMMs. Only used with pipeline parallelism.
     openai_gelu: False
     bias_activation_fusion: False
-    megatron_legacy: False
+    megatron_legacy: True
 
     transformer_engine: False
     fp8: False # enables fp8 in TransformerLayer forward
@@ -192,6 +195,7 @@ model:
     fp8_amax_history_len: 1 # Number of steps for which amax history is recorded per tensor
     fp8_amax_compute_algo: most_recent # 'most_recent' or 'max'. Algorithm for computing amax from history
     use_emha: False # Use fused multi-head attention for large sequence-length. Note this is not yet supported. Please set to False.
+    activation: approx-gelu
 
   # Megatron O2-style half-precision
   megatron_amp_O2: False # Enable O2-level automatic mixed precision using main parameters
@@ -237,14 +241,31 @@ model:
     gen_shape: False # Generate model and kernel details including input shapes
 
   optim:
-    name: fused_adam
-    lr: 1e-3
-    weight_decay: 0.2
-    betas:
-      - 0.9
-      - 0.98
-    sched:
-      name: CosineAnnealing
-      warmup_steps: 2000
-      constant_steps: 0
-      min_lr: 1e-5
+    name: adam # distributed_fused_adam
+    lr: 1e-5
+
+  data_config:
+      image_size: 224, 224
+      hard_neg_num: 0
+      in_batch_neg_num: 0  # TODO: Move this to model config
+      shuffle_cand: True
+      
+      returns: null
+
+      # Relative to mbeir_data_dir
+      mbeir_data_dir: "/data/M-BEIR"
+      enable_query_instruct: True
+      query_instruct_path: "instructions/query_instructions.tsv"
+
+      train_query_data_path: "/data/M-BEIR/query/union_train/mbeir_union_up_train.jsonl"
+      train_cand_pool_path: "/data/M-BEIR/cand_pool/global/mbeir_union_train_cand_pool.jsonl"
+
+      val_query_data_path: "/data/M-BEIR/query/union_val/mbeir_union_val.jsonl"
+      val_cand_pool_path: "/data/M-BEIR/cand_pool/global/mbeir_union_val_cand_pool.jsonl"
+      
+      
+  # DataLoader settings
+  dataloader_config:
+      num_workers: 5 
+      train_batch_size: 105  # 78597MiB / 81559MiB
+      valid_batch_size: 2048

@@ -33,6 +33,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data import DistributedSampler
 from nemo.collections.multimodal.parts.utils import load_nemo_model_weights
 import os
+import torch
 
 
 
@@ -43,7 +44,7 @@ def get_tokenizer(tokenizer):
 
     return tokenizer_wrapper
 
-@hydra_runner(config_path="conf", config_name="megatron_clipscorefusion_config")
+@hydra_runner(config_path="conf", config_name="vitb32_hf")
 def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')
@@ -58,7 +59,7 @@ def main(cfg) -> None:
     exp_manager(trainer, cfg.exp_manager)
     
     model = MegatronCLIPScoreFusionModel(cfg.model, trainer)
-    
+        
     if cfg.model.restore_from_path.endswith(".nemo") or os.path.isdir(cfg.model.restore_from_path):
         state_dict = load_nemo_model_weights(cfg.model.restore_from_path)[0]
         model.load_state_dict(state_dict)

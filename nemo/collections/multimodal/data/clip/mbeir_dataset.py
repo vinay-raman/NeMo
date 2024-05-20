@@ -15,6 +15,8 @@ from PIL import Image
 from collections import defaultdict
 from torch.utils.data import Dataset
 from typeguard import typechecked
+from nemo.collections.multimodal.data.clip.clip_dataset import get_preprocess_fns
+
 
 # Project files
 from nemo.collections.multimodal.data.clip.mbeir_utils import format_string, hash_did, hash_qid, get_mbeir_task_id
@@ -485,3 +487,40 @@ class MBEIRCandidatePoolCollator(MBEIRCollatorBase):
         assert bs == processed_batch["txt_mask_batched"].size(0)
         assert bs == processed_batch["image_mask_batched"].size(0)
         return processed_batch
+
+    
+def build_train_valid_datasets(model_cfg,
+                              tokenizer=None):
+    
+    data_cfg = model_cfg.data_config
+    val_image_transform, text_transform = get_preprocess_fns(model_cfg, tokenizer, is_train=False,)
+    
+    #data loaders
+    train_data = MBEIRMainDataset(mbeir_data_dir=data_cfg.mbeir_data_dir,
+                                  query_data_path=data_cfg.train_query_data_path,
+                                  cand_pool_path=data_cfg.train_cand_pool_path,
+                                  query_instruct_path=data_cfg.query_instruct_path,
+                                  img_preprocess_fn=val_image_transform,
+                                  mode=Mode.TRAIN,
+                                  enable_query_instruct=data_cfg.enable_query_instruct,
+                                  shuffle_cand=data_cfg.shuffle_cand,
+                                  hard_neg_num=0, # TODO 
+                                  returns=data_cfg.returns,
+                                 ) 
+    val_data = None
+    #TODO validation dataset
+    
+    if data_cfg.get("validation") is not None and data_cfg.get("val_query_data_path") and data_cfg.get("val_cand_pool_path"):
+        val_data = MBEIRMainDataset(mbeir_data_dir=data_cfg.mbeir_data_dir,
+                                    query_data_path=data_cfg.val_query_data_path,
+                                    cand_pool_path=data_cfg.val_cand_pool_path,
+                                    query_instruct_path=data_cfg.query_instruct_path,
+                                    img_preprocess_fn=val_image_transform,
+                                    mode=Mode.EVAL,
+                                    enable_query_instruct=data_cfg.enable_query_instruct,
+                                    shuffle_cand=data_cfg.shuffle_cand,
+                                    hard_neg_num=0, # TODO 
+                                    returns=data_cfg.returns,
+                                   ) 
+
+    return train_data, val_data

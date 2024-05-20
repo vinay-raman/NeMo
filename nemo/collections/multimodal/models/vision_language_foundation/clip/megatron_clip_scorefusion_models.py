@@ -24,6 +24,7 @@ from nemo.collections.multimodal.data.clip.mbeir_dataset import (
     MBEIRMainCollator,
     MBEIRCandidatePoolCollator,
     Mode,
+    build_train_valid_datasets,
 )
 from torch.utils.data import DataLoader
 from torch.utils.data import DistributedSampler
@@ -105,9 +106,13 @@ class MegatronCLIPScoreFusionModel(MegatronCLIPModel):
         self.init_consumed_samples = init_consumed_samples
         self.init_global_step = self.trainer.global_step
 
+        self.build_train_valid_test_datasets()
+
         # Batch size need to be provided for dataset
         self._num_micro_batches = get_num_microbatches()
         self._micro_batch_size = self.cfg.micro_batch_size
+        
+        #training & validation datasets
         self.setup_training_data()
 
         # when using pipeline model parallel the final stage need to initialize word embeddings
@@ -125,8 +130,10 @@ class MegatronCLIPScoreFusionModel(MegatronCLIPModel):
         image_mask_batched = batch["image_mask_batched"]
         index_mapping = batch["index_mapping"]
         
-        output_tensor = self.model(image_batched, txt_batched)
-        image_features, text_features, logit_scale = output_tensor
+#         output_tensor = self.model(image_batched, txt_batched)
+#         image_features, text_features, logit_scale = output_tensor
+        image_features = self.model.vision_encoder(image_batched)
+        text_features = self.model.text_encoder(txt_batched)
 
         # Hugging face model directly called
         # image_features = self.model.encode_image(image_batched)
@@ -169,23 +176,32 @@ class MegatronCLIPScoreFusionModel(MegatronCLIPModel):
 
         return fwd_output_and_loss_func
 
+    
+    def build_train_valid_test_datasets(self):
+        logging.info('Building datasets for CLIP Score Fusion...')
+        if self.trainer.limit_val_batches > 1.0 and isinstance(self.trainer.limit_val_batches, float):
+            raise ValueError("limit_val_batches must be an integer or float less than or equal to 1.0.")
+
+        self._train_ds, self._validation_ds = build_train_valid_datasets(
+            model_cfg=self.cfg, 
+            tokenizer=self.tokenizer,
+        )
+        self._test_ds = None
+
+        if self._train_ds is not None:
+            logging.info(f'Length of train dataset: {len(self._train_ds)}')
+        if self._validation_ds is not None:
+            logging.info(f'Length of val dataset: {len(self._validation_ds)}')
+        if self._test_ds is not None:
+            logging.info(f'Length of test dataset: {len(self._test_ds)}')
+        logging.info(f'Finished building datasets for CLIP Score Fusion.')
+
+        return self._train_ds, self._validation_ds, self._test_ds
+    
+    
+    
     def setup_training_data(self):
 
-        val_image_transform, text_transform = get_preprocess_fns(self.cfg, self.tokenizer, is_train=False,)
-    
-        #data loaders
-        self._train_ds = MBEIRMainDataset(
-                        mbeir_data_dir=self.cfg.data_config.mbeir_data_dir,
-                        query_data_path=self.cfg.data_config.train_query_data_path,
-                        cand_pool_path=self.cfg.data_config.train_cand_pool_path,
-                        query_instruct_path=self.cfg.data_config.query_instruct_path,
-                        img_preprocess_fn=val_image_transform,
-                        mode=Mode.TRAIN,
-                        enable_query_instruct=self.cfg.data_config.enable_query_instruct,
-                        shuffle_cand=self.cfg.data_config.shuffle_cand,
-                        hard_neg_num=0, # TODO 
-                        returns=self.cfg.data_config.returns,
-                        ) 
         train_collector = MBEIRMainCollator(
                         tokenizer=self.get_tokenizer(),
                         image_size=tuple(map(int, self.cfg.data_config.image_size.split(','))),
@@ -198,15 +214,15 @@ class MegatronCLIPScoreFusionModel(MegatronCLIPModel):
                         rank=0,
                         shuffle=True,
                         )
-        self._train_dl = DataLoader(
-                    dataset=self._train_ds,
-                    batch_size=self.cfg.dataloader_config.train_batch_size,
-                    num_workers=self.cfg.dataloader_config.num_workers,
-                    pin_memory=True,
-                    sampler=train_sampler,
-                    shuffle=False,  # Note: since we use sampler, shuffle should be False
-                    collate_fn=train_collector,
-                    drop_last=True,
-                    persistent_workers=True if self.cfg.dataloader_config.num_workers > 0 else False,
-                    )
+        self._train_dl = DataLoader(dataset=self._train_ds,
+                                    batch_size=self.cfg.dataloader_config.train_batch_size,
+                                    num_workers=self.cfg.dataloader_config.num_workers,
+                                    pin_memory=True,
+                                    sampler=train_sampler,
+                                    shuffle=False,  # Note: since we use sampler, shuffle should be False
+                                    collate_fn=train_collector,
+                                    drop_last=True,
+                                    persistent_workers=True if self.cfg.dataloader_config.num_workers > 0 else False,
+                                   )
+        
         

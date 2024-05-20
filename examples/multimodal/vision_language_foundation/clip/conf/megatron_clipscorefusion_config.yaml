@@ -2,12 +2,12 @@ trainer:
   devices: 1
   num_nodes: 1
   accelerator: gpu
-  precision: 16
+  precision: 32
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
   use_distributed_sampler: False
   max_epochs: -1 # PTL default. In practice, max_steps will be reached first.
-  max_steps: 15000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  max_steps: 260000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
   log_every_n_steps: 10
   val_check_interval: 100
   check_val_every_n_epoch: null
@@ -26,7 +26,7 @@ exp_manager:
   wandb_logger_kwargs:
     entity: nemollm-mlops-eval-tool
     project: multimodal-retriever
-    name: trial2
+    name: fp_32_trial
   resume_if_exists: True
   resume_ignore_no_checkpoint: True
   resume_from_checkpoint: ${model.resume_from_checkpoint}
